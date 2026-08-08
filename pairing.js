@@ -1,0 +1,152 @@
+// 🕷️ LEGEND-AMMAR — Baileys pairing logic
+const makeWASocket = require("@whiskeysockets/baileys").default;
+const { DisconnectReason, makeCacheableSignalKeyStore, useMultiFileAuthState } =
+  require("@whiskeysockets/baileys");
+const fs = require("fs");
+const path = require("path");
+
+const noopLogger = {
+  level: "error",
+  trace: () => {},
+  debug: () => {},
+  info: () => {},
+  warn: (...args) => console.warn("[Baileys]", ...args),
+  error: (...args) => console.error("[Baileys]", ...args),
+  fatal: (...args) => console.error("[Baileys][FATAL]", ...args),
+  child: () => noopLogger,
+  levelVal: 50,
+};
+
+/**
+ * Validate a WhatsApp phone number. Returns the number without leading '+'.
+ */
+function parseAndValidateNumber(raw) {
+  const input = String(raw).trim().replace(/[\s\u00a0()-]/g, "");
+  if (!input) return { valid: false, reason: "Phone number khali nahi ho sakta." };
+  const digits = input.replace(/^\+/, "");
+  if (!/^\d+$/.test(digits))
+    return { valid: false, reason: "Number me sirf digits hone chahiye (+93770909827)." };
+  if (digits.length < 10 || digits.length > 15)
+    return { valid: false, reason: "Number ki length galat hai (country code ke sath 10-15 digits)." };
+  return { valid: true, number: digits };
+}
+
+const AUTH_DIR = path.join(
+  process.env.AUTH_DIR || "/tmp",
+  "legend-ammar-pair-auth"
+);
+
+async function getAuthState() {
+  if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
+  return useMultiFileAuthState(AUTH_DIR);
+}
+
+function attemptPairing(phoneNumber) {
+  return new Promise(async (resolve) => {
+    let resolved = false;
+    const finish = (r) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(r);
+    };
+
+    let sock;
+    try {
+      const { state, saveCreds } = await getAuthState();
+      sock = makeWASocket({
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, noopLogger),
+        },
+        printQRInTerminal: false,
+        logger: noopLogger,
+        browser: ["Chrome", "Windows", "110.0.5481.177"],
+        // WhatsApp version advertised at runtime (Feb 2026 fix for 405)
+        version: [2, 3000, 1043857760],
+        connectTimeoutMs: 20_000,
+      });
+      sock.ev.on("creds.update", saveCreds);
+
+      const timeout = setTimeout(() => {
+        try {
+          sock?.end(undefined);
+        } catch {
+          /* ignore */
+        }
+        finish({
+          valid: false,
+          error: new Error(
+            "WhatsApp server se connect nahi ho saka, dobara try karein."
+          ),
+        });
+      }, 30000);
+
+      let codeRequested = false;
+      sock.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        if ((connection === "connecting" || qr) && !codeRequested) {
+          codeRequested = true;
+          try {
+            const code = await sock.requestPairingCode(phoneNumber);
+            clearTimeout(timeout);
+            const codeStr = String(code).padStart(8, "0");
+            finish({ valid: true, code: codeStr });
+          } catch (err) {
+            clearTimeout(timeout);
+            try {
+              sock?.end(undefined);
+            } catch {
+              /* ignore */
+            }
+            finish({
+              valid: false,
+              error: new Error(
+                "Pairing code nahi mil saka — WhatsApp server ne mana kar diya, dobara try karein."
+              ),
+            });
+          }
+        } else if (connection === "close") {
+          const code = lastDisconnect?.error?.output?.statusCode;
+          if (code === DisconnectReason.loggedOut || code === 401) {
+            try {
+              fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+            } catch {
+              /* ignore */
+            }
+          }
+          clearTimeout(timeout);
+          finish({
+            valid: false,
+            error: new Error(
+              "WhatsApp server se connect nahi ho saka, dobara try karein."
+            ),
+          });
+        }
+      });
+    } catch (err) {
+      finish({
+        valid: false,
+        error: new Error("Pairing server me masla aa gaya, dobara try karein."),
+      });
+    }
+  });
+}
+
+/**
+ * Up to 3 attempts, then throw.
+ */
+async function requestPairCode(phoneNumber) {
+  const MAX_ATTEMPTS = 3;
+  for (let i = 0; i < MAX_ATTEMPTS; i += 1) {
+    const result = await attemptPairing(phoneNumber);
+    if (result.valid) return result.code;
+    if (i < MAX_ATTEMPTS - 1) {
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  throw new Error(
+    "WhatsApp server se connect nahi ho saka, kuch der baad dobara try karein."
+  );
+}
+
+module.exports = { parseAndValidateNumber, requestPairCode };
