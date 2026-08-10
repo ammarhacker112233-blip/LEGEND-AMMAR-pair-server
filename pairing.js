@@ -41,6 +41,15 @@ async function getAuthState() {
   return useMultiFileAuthState(AUTH_DIR);
 }
 
+// Browser fingerprints known to get past WhatsApp's 405 on hosted servers
+const BROWSER_VARIANTS = [
+  ["Ubuntu", "Chrome", "20.0.04"],
+  ["Chrome", "Windows", "110.0.5481.177"],
+];
+
+// default variant; mutated per-attempt in requestPairCode
+let BROWSER_VARIANT = BROWSER_VARIANTS[0];
+
 function attemptPairing(phoneNumber) {
   return new Promise(async (resolve) => {
     let resolved = false;
@@ -60,10 +69,11 @@ function attemptPairing(phoneNumber) {
         },
         printQRInTerminal: false,
         logger: noopLogger,
-        browser: ["Chrome", "Windows", "110.0.5481.177"],
-        // WhatsApp version advertised at runtime (Feb 2026 fix for 405)
-        version: [2, 3000, 1043857760],
-        connectTimeoutMs: 20_000,
+        // Aug 2026: pinned version [2,3000,1033893291] proven in Baileys #2370
+        // to fix 405 on servers; Ubuntu browser fingerprint fixes #1761 on Docker.
+        browser: BROWSER_VARIANT,
+        version: [2, 3000, 1033893291],
+        connectTimeoutMs: 25_000,
       });
       sock.ev.on("creds.update", saveCreds);
 
@@ -87,7 +97,16 @@ function attemptPairing(phoneNumber) {
         if ((connection === "connecting" || qr) && !codeRequested) {
           codeRequested = true;
           try {
-            const code = await sock.requestPairingCode(phoneNumber);
+            // try pairing via the default channel first; if that fails with
+            // a WhatsApp-side error, fall back to the "call" channel (#2370 workaround)
+            let code;
+            try {
+              code = await sock.requestPairingCode(phoneNumber);
+            } catch (inner) {
+              code = await sock.requestPairingCode(phoneNumber, {
+                method: "call",
+              });
+            }
             clearTimeout(timeout);
             const codeStr = String(code).padStart(8, "0");
             finish({ valid: true, code: codeStr });
@@ -138,6 +157,8 @@ function attemptPairing(phoneNumber) {
 async function requestPairCode(phoneNumber) {
   const MAX_ATTEMPTS = 3;
   for (let i = 0; i < MAX_ATTEMPTS; i += 1) {
+    // Rotate browser fingerprints across attempts (one per variant)
+    BROWSER_VARIANT = BROWSER_VARIANTS[i % BROWSER_VARIANTS.length];
     const result = await attemptPairing(phoneNumber);
     if (result.valid) return result.code;
     if (i < MAX_ATTEMPTS - 1) {
