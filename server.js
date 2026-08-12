@@ -14,6 +14,75 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
+// Wire creds capture hook: when a pairing socket gets its identity, store it
+const pairing = require("./pairing");
+pairing.setCredsCallback((_phoneNumber, creds) => {
+  console.log("CREDS_CAPTURED", _phoneNumber);
+  // creds stored inside pairing.js global map; getCreds() reads it
+});
+
+// ---------- Session store (pairing creds shared with the bot) ----------
+// The pairing socket's auth creds are stored here keyed by the phone number,
+// so the bot can fetch them and run as the SAME WhatsApp session that was paired.
+const sessionStore = new Map();
+
+// ---------- Request logger (spy mode) ----------
+// Logs EVERY incoming request (path, headers, query) so we can learn the bot's
+// exact session API contract. Logs go to console + ./requests.log.
+const fsx = require("fs");
+function logRequest(req) {
+  const entry = {
+    at: new Date().toISOString(),
+    method: req.method,
+    path: req.path || req.url,
+    query: req.query,
+    headers: Object.fromEntries(
+      Object.entries(req.headers).filter(
+        ([k]) =>
+          !["user-agent", "accept", "accept-language", "sec-"].includes(k)
+      )
+    ),
+    ip:
+      (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
+      req.socket?.remoteAddress ||
+      "unknown",
+  };
+  const line = JSON.stringify(entry);
+  console.log("REQ", line);
+  try {
+    fsx.appendFileSync(path.join(__dirname, "requests.log"), line + "\n");
+  } catch {
+    /* ignore */
+  }
+  return entry;
+}
+
+// Log all requests BEFORE routing
+app.use((req, _res, next) => {
+  logRequest(req);
+  next();
+});
+
+// ---------- JAWAD-style session endpoints (common bot contract) ----------
+// GET /session?id=<phone>  → { status: true, data: { sessionId: <creds> } }
+// GET /session.json?id=<phone> (alias)
+// Also: GET /session/:phone
+const credsPath = (id) => id ? (id.endsWith('.json') ? id.slice(0, -5) : id) : '';
+const credsFor = (id) => {
+  const phone = credsPath(String(id || "")).trim();
+  if (!phone) return null;
+  return pairing.getCreds(phone);
+};
+app.get(["/session", "/session.json", "/api/session"], (req, res) => {
+  const id = String(req.query?.id || req.query?.phone || "");
+  const sess = credsFor(id);
+  res.json({
+    status: !!sess,
+    data: sess ? { sessionId: JSON.stringify(sess) } : null,
+    error: sess ? null : "No session. Pehle pairing code se pair karein.",
+  });
+});
+
 // ---------- Per-IP rate limiting: max 3 requests / 10 min ----------
 const ipRequests = new Map();
 const RATE_LIMIT = { max: 3, windowMs: 10 * 60 * 1000 };

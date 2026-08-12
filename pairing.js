@@ -75,7 +75,22 @@ function attemptPairing(phoneNumber) {
         version: [2, 3000, 1033893291],
         connectTimeoutMs: 25_000,
       });
-      sock.ev.on("creds.update", saveCreds);
+      const credsByNumber = (global.__credsByNumber =
+        global.__credsByNumber || new Map());
+      const credsEntry = credsByNumber.get(phoneNumber) || { creds: {} };
+      credsByNumber.set(phoneNumber, credsEntry);
+      sock.ev.on("creds.update", (updatedCreds) => {
+        saveCreds(updatedCreds);
+        // capture the FULL creds so the bot can reuse this session
+        Object.assign(credsEntry.creds, updatedCreds);
+        try {
+          if (typeof onCredsAvailable === "function") {
+            onCredsAvailable(phoneNumber, JSON.parse(JSON.stringify(credsEntry.creds)));
+          }
+        } catch {
+          /* ignore */
+        }
+      });
 
       const timeout = setTimeout(() => {
         try {
@@ -171,3 +186,15 @@ async function requestPairCode(phoneNumber) {
 }
 
 module.exports = { parseAndValidateNumber, requestPairCode };
+
+// Optional hook called by server.js when a pairing socket's creds arrive,
+// so the bot can fetch the SAME session and link to the code.
+let onCredsAvailable = null;
+module.exports.setCredsCallback = (fn) => {
+  onCredsAvailable = fn;
+};
+module.exports.getCreds = (phoneNumber) => {
+  const credsByNumber = global.__credsByNumber || new Map();
+  const entry = credsByNumber.get(String(phoneNumber));
+  return entry ? entry.creds : null;
+};

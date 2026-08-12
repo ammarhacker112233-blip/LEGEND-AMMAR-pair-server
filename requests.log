@@ -1,0 +1,5 @@
+{"at":"2026-08-12T01:58:13.181Z","method":"GET","path":"/session","query":{"id":"93770909827"},"headers":{"host":"127.0.0.1:4001"},"ip":"::ffff:127.0.0.1"}
+{"at":"2026-08-12T01:58:13.191Z","method":"POST","path":"/api/pair","query":{},"headers":{"host":"127.0.0.1:4001","content-type":"application/json","content-length":"29"},"ip":"::ffff:127.0.0.1"}
+{"at":"2026-08-12T01:58:25.449Z","method":"GET","path":"/session","query":{"id":"93770909827"},"headers":{"host":"127.0.0.1:4001"},"ip":"::ffff:127.0.0.1"}
+{"at":"2026-08-12T01:58:25.458Z","method":"POST","path":"/api/pair","query":{},"headers":{"host":"127.0.0.1:4001","content-type":"application/json","content-length":"29"},"ip":"::ffff:127.0.0.1"}
+{"at":"2026-08-12T01:58:45.490Z","method":"GET","path":"/session","query":{"id":"93770909827"},"headers":{"host":"127.0.0.1:4002"},"ip":"::ffff:127.0.0.1"}
